@@ -1,210 +1,187 @@
-// server.js (Baileys-based replacement, no Chromium)
 const express = require("express");
+const { Client, MessageMedia, LocalAuth } = require("whatsapp-web.js");
+const qrcode = require("qrcode");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
-const qrcode = require("qrcode");
-
-const { default: makeWASocket, useSingleFileAuthState, DisconnectReason, fetchLatestBaileysVersion, jidNormalizedUser, makeCacheableSignalKeyStore } = require("@adiwajshing/baileys");
 
 const app = express();
 app.use(express.json());
 app.use(express.static("public"));
 
-const upload = multer({ dest: "uploads/" });
-
 let qrCodeData = null;
 let isReady = false;
 
-// --- AUTH STATE (single file)
-const authFile = path.resolve(__dirname, "auth_info.json");
-const { state, saveState } = useSingleFileAuthState(authFile);
+// File upload setup
+const upload = multer({ dest: "uploads/" });
 
-// --- Create socket
-async function startSock() {
-  try {
-    const { version } = await fetchLatestBaileysVersion().catch(()=>({ version: [2,2305,8] }));
-    const sock = makeWASocket({
-      version,
-      printQRInTerminal: false,
-      auth: state,
-      // a tiny browser string
-      browser: ["whatsapp-api", "nodejs", "1.0.0"],
-      // logger: WABinaryLogger etc (default is fine)
-    });
+// WhatsApp Client Setup
+const client = new Client({
+    puppeteer: {
+        headless: true,
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+        ],
+    },
+    
+    authStrategy: new LocalAuth(),
+});
 
-    // persist creds when updated
-    sock.ev.on("creds.update", saveState);
+client.on("qr", (qr) => {
+    qrCodeData = qr;
+    console.log("🔑 QR received, scan using WhatsApp");
+});
 
-    // connection updates (qr, open/close)
-    sock.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect, qr } = update;
-      if (qr) {
-        qrCodeData = qr;
-        console.log("🔑 QR received (Baileys).");
-      }
-      if (connection === "open") {
-        isReady = true;
-        console.log("✅ WhatsApp connection open.");
-        qrCodeData = null;
-      }
-      if (connection === "close") {
-        isReady = false;
-        // try to reconnect if not logged out
-        const reason = (lastDisconnect && lastDisconnect.error) ? lastDisconnect.error.output?.statusCode : null;
-        console.log("❌ Connection closed:", reason || lastDisconnect);
-        // Baileys will try to reconnect automatically by default
-      }
-    });
+client.on("ready", () => {
+    isReady = true;
+    console.log("✅ WhatsApp is ready!");
+});
 
-    // optional: log incoming messages
-    sock.ev.on("messages.upsert", m => {
-      // console.log("message upsert", m);
-    });
+client.on("authenticated", () => console.log("🔐 Authenticated"));
+client.on("auth_failure", (msg) => console.error("❌ Auth failed:", msg));
+client.on("disconnected", () => {
+    isReady = false;
+    console.log("❌ WhatsApp disconnected!");
+});
 
-    return sock;
-  } catch (err) {
-    console.error("Failed to start socket:", err);
-    throw err;
-  }
-}
-
-// start socket and hold reference
-let sockPromise = startSock();
-let sockRef = null;
-sockPromise.then(s => sockRef = s).catch(e => console.error(e));
+client.initialize();
 
 // ---------- API ENDPOINTS ----------
 
 // Status
 app.get("/status", (req, res) => {
-  res.json({ authenticated: isReady });
+    res.json({ authenticated: isReady });
 });
 
 // Get QR
 app.get("/get-qr", async (req, res) => {
-  try {
-    if (!qrCodeData) return res.status(400).send("QR not generated yet");
-    const qrImage = await qrcode.toBuffer(qrCodeData);
-    res.setHeader("Content-Type", "image/png");
-    res.send(qrImage);
-  } catch (err) {
-    console.error("QR Error:", err);
-    res.status(500).send("Failed to generate QR");
-  }
+    try {
+        if (!qrCodeData) return res.status(400).send("QR not generated yet");
+        const qrImage = await qrcode.toBuffer(qrCodeData);
+        res.setHeader("Content-Type", "image/png");
+        res.send(qrImage);
+    } catch (err) {
+        console.error("QR Error:", err);
+        res.status(500).send("Failed to generate QR");
+    }
 });
 
-// Helper: ensure socket is ready
-async function getSocket() {
-  if (!sockRef) {
-    sockRef = await sockPromise;
-  }
-  return sockRef;
-}
+// Bulk text
+app.post("/send-bulk", async (req, res) => {
+    if (!isReady) return res.status(400).json({ error: "WhatsApp not ready" });
+    const { message, delayMs } = req.body;
+    if (!message) return res.status(400).json({ error: "message is required" });
+
+    const contacts = await client.getContacts();
+    const users = contacts.filter((c) => c.isUser);
+    const delay = delayMs || 2000;
+
+    const results = [];
+    for (const c of users) {
+        try {
+            await client.sendMessage(c.id._serialized, message);
+            results.push({ to: c.id.user, status: "sent" });
+            await new Promise((r) => setTimeout(r, delay));
+        } catch (err) {
+            results.push({ to: c.id.user, status: "failed", error: err.message });
+        }
+    }
+
+    res.json({ total: users.length, results });
+});
+
+// Bulk media
+app.post("/send-bulk-media", async (req, res) => {
+    if (!isReady) return res.status(400).json({ error: "WhatsApp not ready" });
+    const { caption, filePath, delayMs } = req.body;
+    if (!filePath) return res.status(400).json({ error: "filePath is required" });
+
+    const absPath = path.resolve(filePath);
+    if (!fs.existsSync(absPath)) return res.status(400).json({ error: "File not found" });
+
+    const media = MessageMedia.fromFilePath(absPath);
+    const contacts = await client.getContacts();
+    const users = contacts.filter((c) => c.isUser);
+    const delay = delayMs || 2000;
+
+    const results = [];
+    for (const c of users) {
+        try {
+            await client.sendMessage(c.id._serialized, media, { caption: caption || "" });
+            results.push({ to: c.id.user, status: "sent" });
+            await new Promise((r) => setTimeout(r, delay));
+        } catch (err) {
+            results.push({ to: c.id.user, status: "failed", error: err.message });
+        }
+    }
+
+    res.json({ total: users.length, results });
+});
 
 // Send to specific numbers (text)
 app.post("/send-specific", async (req, res) => {
-  try {
+    if (!isReady) return res.status(400).json({ error: "WhatsApp not ready" });
     const { message, numbers } = req.body;
     if (!message || !numbers || numbers.length === 0)
-      return res.status(400).json({ error: "message and numbers are required" });
+        return res.status(400).json({ error: "message and numbers are required" });
 
-    const socket = await getSocket();
     const results = [];
-
-    for (const rawNum of numbers) {
-      const num = rawNum.toString().replace(/\D/g, ""); // digits only
-      const jid = num + "@s.whatsapp.net";
-      try {
-        await socket.sendMessage(jid, { text: message });
-        results.push({ to: num, status: "sent" });
-        // pause a bit
-        await new Promise(r => setTimeout(r, 1200));
-      } catch (err) {
-        results.push({ to: num, status: "failed", error: err.message || err.toString() });
-      }
+    for (const num of numbers) {
+        const id = `${num}@c.us`;
+        try {
+            await client.sendMessage(id, message);
+            results.push({ to: num, status: "sent" });
+            await new Promise((r) => setTimeout(r, 1500));
+        } catch (err) {
+            results.push({ to: num, status: "failed", error: err.message });
+        }
     }
-
     res.json({ total: numbers.length, results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to send messages" });
-  }
 });
 
 // Send media to specific numbers (file upload)
 app.post("/send-specific-media", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ error: "File is required" });
-    let { caption, numbers } = req.body;
-    if (typeof numbers === "string") numbers = numbers.split(",").map(n => n.trim());
-    if (!numbers || numbers.length === 0) return res.status(400).json({ error: "Numbers are required" });
-
-    const socket = await getSocket();
-    const buffer = fs.readFileSync(req.file.path);
-    const mimeType = req.file.mimetype || "application/octet-stream";
-
-    const results = [];
-    for (const rawNum of numbers) {
-      const num = rawNum.toString().replace(/\D/g, "");
-      const jid = num + "@s.whatsapp.net";
-      try {
-        // choose type by mime
-        let messagePayload = {};
-        if (mimeType.startsWith("image/")) messagePayload.image = { buffer, caption: caption || "" };
-        else if (mimeType.startsWith("video/")) messagePayload.video = { buffer, caption: caption || "" };
-        else messagePayload.document = { url: req.file.path, mimetype: mimeType, fileName: req.file.originalname };
-
-        await socket.sendMessage(jid, messagePayload);
-        results.push({ to: num, status: "sent" });
-        await new Promise(r => setTimeout(r, 1500));
-      } catch (err) {
-        results.push({ to: num, status: "failed", error: err.message || err.toString() });
-      }
-    }
-
-    // cleanup file
-    try { fs.unlinkSync(req.file.path); } catch(e){}
-
-    res.json({ total: numbers.length, results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to upload or send media" });
-  }
-});
-
-// Bulk text endpoint (accepts numbers array in body)
-app.post("/send-bulk", async (req, res) => {
-  try {
     if (!isReady) return res.status(400).json({ error: "WhatsApp not ready" });
-    const { message, numbers, delayMs } = req.body;
-    if (!message) return res.status(400).json({ error: "message is required" });
-    if (!numbers || numbers.length === 0) return res.status(400).json({ error: "numbers array is required" });
 
-    const socket = await getSocket();
-    const delay = delayMs || 2000;
-    const results = [];
+    try {
+        const { caption, numbers } = req.body;
+        let parsedNumbers = numbers;
+        if (typeof numbers === "string") parsedNumbers = numbers.split(",").map(n => n.trim());
 
-    for (const rawNum of numbers) {
-      const num = rawNum.toString().replace(/\D/g, "");
-      const jid = num + "@s.whatsapp.net";
-      try {
-        await socket.sendMessage(jid, { text: message });
-        results.push({ to: num, status: "sent" });
-        await new Promise(r => setTimeout(r, delay));
-      } catch (err) {
-        results.push({ to: num, status: "failed", error: err.message || err.toString() });
-      }
+        if (!req.file) return res.status(400).json({ error: "File is required" });
+        if (!parsedNumbers || parsedNumbers.length === 0)
+            return res.status(400).json({ error: "Numbers are required" });
+
+        const media = MessageMedia.fromFilePath(req.file.path);
+        const results = [];
+
+        for (const num of parsedNumbers) {
+            const id = `${num}@c.us`;
+            try {
+                await client.sendMessage(id, media, { caption: caption || "" });
+                results.push({ to: num, status: "sent" });
+                await new Promise(r => setTimeout(r, 1500));
+            } catch (err) {
+                results.push({ to: num, status: "failed", error: err.message });
+            }
+        }
+
+        // Delete uploaded file after sending
+        fs.unlinkSync(req.file.path);
+
+        res.json({ total: parsedNumbers.length, results });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Failed to upload or send media to specific numbers." });
     }
-
-    res.json({ total: numbers.length, results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to send bulk messages" });
-  }
 });
 
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
