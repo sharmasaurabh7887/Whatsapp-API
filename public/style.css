@@ -1,0 +1,10 @@
+#qrContainer {
+    text-align: center;
+    margin-top: 10px;
+  }
+  
+  #qrStatus {
+    font-weight: 500;
+    margin-top: 10px;
+    color: #333;
+  }

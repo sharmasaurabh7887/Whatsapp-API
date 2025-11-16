@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WhatsApp Dashboard</title>
+<link rel="stylesheet" href="style.css" />
+<style>
+body { font-family: "Segoe UI", sans-serif; background:#f3f4f6; margin:0; padding:20px; }
+h1 { text-align:center; color:#1a202c; }
+.container { max-width:800px; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+.card { background:white; border-radius:10px; padding:20px; box-shadow:0 2px 8px rgba(0,0,0,0.1); }
+h2 { margin-top:0; color:#2d3748; }
+label { display:block; margin-top:10px; color:#4a5568; }
+input, textarea { width:100%; padding:10px; margin-top:5px; border:1px solid #cbd5e0; border-radius:5px; }
+button { margin-top:15px; background:#2563eb; color:white; padding:10px 20px; border:none; border-radius:6px; cursor:pointer; transition:0.3s; }
+button:hover { background:#1e40af; }
+#qr { text-align:center; margin-top:10px; }
+#qr img { width:200px; border-radius:10px; }
+.response { margin-top:10px; font-weight:bold; color:#2f855a; }
+</style>
+</head>
+<body>
+<h1>💬 WhatsApp Dashboard</h1>
+<div class="container">
+
+<!-- QR Code Section -->
+<section class="card">
+<h2>🔑 WhatsApp Login</h2>
+<button id="generateQR">Generate QR Code</button>
+<div id="qr">
+<p id="qrStatus">Click “Generate QR Code” to connect.</p>
+<img id="qrImage" style="display:none; margin-top:10px; border:1px solid #ccc; border-radius:8px;">
+</div>
+</section>
+
+<!-- Bulk Text -->
+<section class="card">
+<h2>📤 Send Bulk Message</h2>
+<form id="bulkForm">
+<label>Enter Message</label>
+<textarea id="bulkMessage" rows="3" placeholder="Type your message here"></textarea>
+<button type="submit">Send to All Contacts</button>
+</form>
+<div id="bulkResponse" class="response"></div>
+</section>
+
+<!-- Bulk Media -->
+<section class="card">
+<h2>🖼️ Send Bulk Media</h2>
+<form id="mediaForm">
+<label>Enter Caption</label>
+<input type="text" id="caption" placeholder="Enter caption" />
+<label>File Path (local)</label>
+<input type="text" id="filePath" placeholder="e.g. D:/images/test.jpg" />
+<button type="submit">Send Media</button>
+</form>
+<div id="mediaResponse" class="response"></div>
+</section>
+
+<!-- Specific Numbers Text -->
+<section class="card">
+<h2>📱 Send to Specific Numbers</h2>
+<form id="sendSpecificForm">
+<label>Enter WhatsApp Numbers (comma separated, with country code)</label>
+<input type="text" id="specificNumbers" placeholder="e.g. 919876543210,918888888888" />
+<label>Enter Message</label>
+<textarea id="specificMessage" rows="3" placeholder="Type your message"></textarea>
+<button type="submit">Send Message</button>
+</form>
+<div id="specificResponse" class="response"></div>
+</section>
+
+<!-- Specific Numbers Media -->
+<section class="card">
+<h2>🖼️ Send Media to Specific Numbers</h2>
+<form id="sendSpecificMediaForm" enctype="multipart/form-data">
+<label>Enter WhatsApp Numbers (comma separated, with country code)</label>
+<input type="text" id="mediaNumbers" placeholder="e.g. 919876543210,918888888888" />
+<label>Enter Caption</label>
+<input type="text" id="mediaCaption" placeholder="Enter caption" />
+<label>Select File</label>
+<input type="file" id="mediaFile" accept="image/*,video/*,application/pdf" />
+<button type="submit">Send Media</button>
+</form>
+<div id="mediaSpecificResponse" class="response"></div>
+</section>
+
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
